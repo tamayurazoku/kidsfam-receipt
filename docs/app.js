@@ -1,7 +1,7 @@
 /* きっずふぁむ 領収書アプリ（画面側） */
 (function () {
   'use strict';
-  const APP_VERSION = '1.1.2';
+  const APP_VERSION = '1.2.0';
   const { DB, api, processQueue, aiToRecord } = window.KF;
   const $ = (s) => document.querySelector(s);
   const $$ = (s) => Array.from(document.querySelectorAll(s));
@@ -20,7 +20,7 @@
     if (name === 'camera') startCamera(); else stopCamera();
     if (name === 'list') renderList();
     if (name === 'settings') renderSettings();
-    window.scrollTo(0, 0);
+    $('main').scrollTop = 0;
   }
 
   function busy(on, text) {
