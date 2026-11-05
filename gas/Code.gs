@@ -14,10 +14,24 @@ const DEFAULT_ROOT_FOLDER_ID = '1Xn5dU9KPJWiRGyxQIpYZ31782x6Rd0vw'; // 「きっ
 const DEFAULT_CLAUDE_MODEL = 'claude-sonnet-5-5';
 const CATEGORIES = ['レッスン室', '交通費', '駐車場代', '備品代', 'その他'];
 // よく使う施設（名前の統一とカレンダー照合に使用）。ここにない施設も自動で集計表に追加されます
+// keywords: 書類の施設名から判定する言葉 / cal: カレンダーの予定名から判定する言葉（上から順に判定）
 const FACILITIES = [
-  { name: '釜石市民ホール', room: 'スタジオA', keywords: ['釜石', 'TETTO', 'テット'] },
-  { name: '大槌町文化交流センター', room: 'レッスン室', keywords: ['大槌', 'おしゃっち', 'オシャッチ'] },
+  { name: '大槌町城山公園体育館', keywords: ['城山'], cal: ['城山', '体育館'] },
+  { name: '大槌町中央公民館', keywords: ['中央公民館'], cal: ['公民館'] },
+  { name: '文化交流センターおしゃっち', keywords: ['文化交流センター', 'おしゃっち', 'オシャッチ'], cal: ['おしゃっち', 'オシャッチ', '大槌'] },
+  { name: '釜石市民ホールTETTO', keywords: ['釜石市民ホール', 'TETTO', 'テット'], cal: ['TETTO', 'テット', '釜石'] },
 ];
+// 以前の名前 → 新しい名前（保存済みデータの修正用）
+const OLD_NAMES = { '大槌町文化交流センター': '文化交流センターおしゃっち', '釜石市民ホール': '釜石市民ホールTETTO' };
+
+/** 施設名を統一する（書類の文字・AIの答えから） */
+function canonicalFacility_(text) {
+  const t = String(text || '').toUpperCase();
+  for (let i = 0; i < FACILITIES.length; i++) {
+    if (FACILITIES[i].keywords.some(function (k) { return t.indexOf(k.toUpperCase()) >= 0; })) return FACILITIES[i].name;
+  }
+  return null;
+}
 const MONTH_ORDER = [4, 5, 6, 7, 8, 9, 10, 11, 12, 1, 2, 3];
 const HEADER = ['No', '支払日', '種類', '支払先', '内容', '金額(税込)', 'うち消費税', '宛名', '番号', '写真', '備考', '登録日時', 'ファイルID', '登録ID'];
 const COL = { no: 1, date: 2, category: 3, payee: 4, detail: 5, amount: 6, tax: 7, addressee: 8, number: 9, photo: 10, note: 11, created: 12, fileId: 13, clientId: 14 };
@@ -258,8 +272,9 @@ function normalizeRecord_(r) {
   const date = String(r.date || '').replace(/\//g, '-');
   parseDate_(date);
   const category = CATEGORIES.indexOf(r.category) >= 0 ? r.category : 'その他';
-  const payee = String(r.payee || '').trim();
+  let payee = String(r.payee || '').trim();
   if (!payee) throw new Error('支払先が入力されていません');
+  payee = OLD_NAMES[payee] || canonicalFacility_(payee) || payee;
   return {
     date: date, category: category, payee: payee,
     detail: String(r.detail || '').trim(), amount: amount, tax: tax,
@@ -357,6 +372,62 @@ function allRows_(fy) {
   return rows;
 }
 
+/**
+ * 【一度だけ実行】保存済みのデータを新しい施設名に直す
+ *  - スプレッドシートの「支払先」
+ *  - Googleドライブの写真の名前
+ *  - 年間集計の「レッスン室 施設別」の行
+ */
+function fixFacilityNames() {
+  // 以前「大槌町文化交流センター」と誤って保存されていた写真（中身を確認済み）
+  const OVERRIDE = {
+    '12fwTvFD5x7E1wZJB9xzdTVG9b8isQLZo': '大槌町城山公園体育館',
+    '1xK8ZnmdwJrr8Dpg-axIUFr6vLy3Q7BUN': '大槌町城山公園体育館',
+    '1UAVlCO-BcFCK1klCH7zke-hZc4V4fLi3': '大槌町城山公園体育館',
+    '1pZFrtisC4XmJjbLhePWsrd-W_XiJBy8x': '大槌町中央公民館',
+    '1Kaaxiis2zm-xZL66hVRflYkm5EfN5g3f': '大槌町中央公民館',
+  };
+  const fy = fiscalYearOf_(today_());
+  const ctx = yearContext_(fy);
+  let fixedRows = 0, renamed = 0;
+  MONTH_ORDER.forEach(function (m) {
+    const sh = ctx.ss.getSheetByName(monthSheetName_(m));
+    if (!sh || sh.getLastRow() < DATA_START) return;
+    const n = sh.getLastRow() - DATA_START + 1;
+    const rng = sh.getRange(DATA_START, 1, n, HEADER.length);
+    const vals = rng.getValues(), disp = rng.getDisplayValues();
+    for (let i = 0; i < n; i++) {
+      const fileId = vals[i][COL.fileId - 1];
+      const old = String(vals[i][COL.payee - 1] || '');
+      if (!old) continue;
+      const nw = OVERRIDE[fileId] || OLD_NAMES[old] || canonicalFacility_(old) || old;
+      if (nw !== old) { sh.getRange(DATA_START + i, COL.payee).setValue(nw); fixedRows++; }
+      if (!fileId) continue;
+      try {
+        const f = DriveApp.getFileById(fileId);
+        const date = disp[i][COL.date - 1].replace(/\//g, '-');
+        const amount = Number(String(disp[i][COL.amount - 1]).replace(/[^\d]/g, '')) || 0;
+        const name = [date, vals[i][COL.category - 1], safeName_(nw), amount + '円'].join('_') + '.jpg';
+        if (f.getName() !== name) { f.setName(name); renamed++; }
+        f.setDescription([date, vals[i][COL.category - 1], nw, vals[i][COL.detail - 1], amount + '円', vals[i][COL.number - 1]].join(' / '));
+      } catch (e) { console.warn('写真が見つかりません: ' + fileId); }
+    }
+  });
+  rebuildFacilityRows_(ctx.ss, fy);
+  SpreadsheetApp.flush();
+  console.log('支払先を直した行: ' + fixedRows + ' 件 / 名前を変えた写真: ' + renamed + ' 件 / 施設別の表を作り直しました');
+}
+
+/** 年間集計の「レッスン室 施設別」を作り直す（よく使う施設＋データにある他の施設） */
+function rebuildFacilityRows_(ss, fy) {
+  const sum = ss.getSheetByName(SUMMARY_SHEET);
+  if (!sum) return;
+  const last = sum.getLastRow();
+  if (last >= 20) sum.getRange(20, 1, last - 19, 14).clearContent();
+  FACILITIES.forEach(function (f) { ensureFacilityRow_(ss, f.name); });
+  allRows_(fy).forEach(function (r) { if (r.category === 'レッスン室') ensureFacilityRow_(ss, r.payee); });
+}
+
 /** 年間集計の「レッスン室 施設別」に、まだない施設の行を自動で追加する */
 function ensureFacilityRow_(ss, payee) {
   const sum = ss.getSheetByName(SUMMARY_SHEET);
@@ -408,7 +479,7 @@ function facilityFromTitle_(title) {
   if (!/sara/i.test(t)) return null;
   for (let i = 0; i < FACILITIES.length; i++) {
     const f = FACILITIES[i];
-    if (f.keywords.some(function (k) { return t.toUpperCase().indexOf(k.toUpperCase()) >= 0; })) return f.name;
+    if (f.cal.some(function (k) { return t.toUpperCase().indexOf(k.toUpperCase()) >= 0; })) return f.name;
   }
   return null;
 }
@@ -502,9 +573,12 @@ function receiptPrompt_() {
     '- 「利用者登録番号」は毎回同じ番号なので使わない。',
     '',
     '# 支払先（payee）と種類（category）',
-    '- 次の施設は必ずこの名前に統一する:',
-    '  - 釜石市民ホール（TETTO・釜石市民ホール指定管理者）→ payee「釜石市民ホール」、detail は部屋名（例「スタジオA」）',
-    '  - 大槌町文化交流センター（おしゃっち・大槌町長・「文化交流センター」の領収印）→ payee「大槌町文化交流センター」、detail は摘要（例「レッスン室」）',
+    '- よく使う施設は4つ。書類の種類で見分け、必ずこの名前にする（「大槌町」と書いてあっても施設は別々なので注意）:',
+    '  1. 小さい緑色の「納入通知書兼領収書」（大槌町長、領収印に「文化交流センター」）→ payee「文化交流センターおしゃっち」、detail は摘要（例「レッスン室」）',
+    '  2. 「大槌町城山公園体育館使用許可書」→ payee「大槌町城山公園体育館」、detail は使用場所（例「アリーナ全面」「アリーナ半面」）',
+    '  3. 「大槌町中央公民館使用許可書」→ payee「大槌町中央公民館」、detail は使用場所（例「大会議室」）',
+    '  4. 「施設利用許可書」（釜石市民ホール・TETTO・釜石市民ホール指定管理者）→ payee「釜石市民ホールTETTO」、detail は利用施設（例「スタジオA」）',
+    '- 使用許可書（城山公園体育館・中央公民館）の支払日は、許可した日付（「令和○年○月○日 …館長」の日付）または受付印の日付。使用日時ではない。',
     '- 上記以外の施設（市民会館・公民館・体育館・貸しスタジオ・貸し会議室など）は、書類に書かれた正式な施設名を payee に、部屋名を detail に入れる。',
     '- 種類: レッスン室（施設・部屋・スタジオの利用料。初めての施設でもレッスン室）/ 交通費（電車・バス・タクシー・高速代・ガソリン）/ 駐車場代 / 備品代（物品の購入）/ その他。',
     '',
@@ -551,9 +625,8 @@ function analyzeReceipt_(imageB64) {
   if (!textBlock) throw new Error('AIの応答が空でした');
   const r = JSON.parse(textBlock.text);
   // 施設名の統一（念のため）
-  FACILITIES.forEach(function (f) {
-    if (f.keywords.some(function (k) { return String(r.payee).indexOf(k) >= 0; })) r.payee = f.name;
-  });
+  const canon = canonicalFacility_(r.payee);
+  if (canon) r.payee = canon;
   return r;
 }
 

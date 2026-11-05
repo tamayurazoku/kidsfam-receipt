@@ -67,10 +67,12 @@
             <option>レッスン室</option><option>交通費</option><option>駐車場代</option><option>備品代</option><option>その他</option>
           </select>
         </label>
-        <label>支払先<input name="payee" list="payeeList" required placeholder="例：釜石市民ホール"></label>
+        <label>支払先<input name="payee" list="payeeList" required placeholder="例：文化交流センターおしゃっち"></label>
         <datalist id="payeeList">
-          <option value="釜石市民ホール"></option>
-          <option value="大槌町文化交流センター"></option>
+          <option value="文化交流センターおしゃっち"></option>
+          <option value="大槌町城山公園体育館"></option>
+          <option value="大槌町中央公民館"></option>
+          <option value="釜石市民ホールTETTO"></option>
         </datalist>
         <label>内容<input name="detail" placeholder="例：スタジオA / レッスン室"></label>
         <div class="two">
@@ -100,7 +102,7 @@
     <!-- カレンダー照合 -->
     <section id="screen-calendar" class="screen">
       <h2>カレンダーと照らし合わせ</h2>
-      <p class="hint">Googleカレンダーの「SARA」の予定（おしゃっち・大槌 / TETTO・釜石）と、レッスン室の領収書を照らし合わせます。</p>
+      <p class="hint">Googleカレンダーの「SARA」の予定（おしゃっち・大槌 / 城山・体育館 / 公民館 / TETTO・釜石）と、レッスン室の領収書を照らし合わせます。</p>
       <div class="two">
         <label>開始<input id="calFrom" type="date"></label>
         <label>終了<input id="calTo" type="date"></label>
