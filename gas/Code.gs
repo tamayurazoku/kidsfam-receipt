@@ -6,11 +6,14 @@
  *   APP_TOKEN       : アプリとの合言葉（setup() を実行すると自動で作成されます）
  *   ROOT_FOLDER_ID  : 保存先フォルダID（未設定なら DEFAULT_ROOT_FOLDER_ID）
  *   CALENDAR_ID     : 照合に使うカレンダーID（未設定ならメインのカレンダー）
+ *   CLAUDE_MODEL    : AIのモデル（未設定なら DEFAULT_CLAUDE_MODEL）
  */
 
 const DEFAULT_ROOT_FOLDER_ID = '1Xn5dU9KPJWiRGyxQIpYZ31782x6Rd0vw'; // 「きっずふぁむ　領収書」
-const CLAUDE_MODEL = 'claude-opus-5-5';
+// AIのモデル（スクリプトプロパティ CLAUDE_MODEL で変更可。読み取り精度を最優先したい場合は claude-opus-5-5）
+const DEFAULT_CLAUDE_MODEL = 'claude-sonnet-5-5';
 const CATEGORIES = ['レッスン室', '交通費', '駐車場代', '備品代', 'その他'];
+// よく使う施設（名前の統一とカレンダー照合に使用）。ここにない施設も自動で集計表に追加されます
 const FACILITIES = [
   { name: '釜石市民ホール', room: 'スタジオA', keywords: ['釜石', 'TETTO', 'テット'] },
   { name: '大槌町文化交流センター', room: 'レッスン室', keywords: ['大槌', 'おしゃっち', 'オシャッチ'] },
@@ -67,13 +70,28 @@ function setup() {
   const fy = fiscalYearOf_(today_());
   const ctx = yearContext_(fy);
   CalendarApp.getDefaultCalendar(); // カレンダー権限の承認用
+  installYearTrigger_();
   if (!props.getProperty('CLAUDE_API_KEY')) console.warn('CLAUDE_API_KEY が未設定です。スクリプトプロパティに追加してください。');
   console.log('合言葉（APP_TOKEN）: ' + props.getProperty('APP_TOKEN'));
   console.log(fy + '年度スプレッドシート: ' + ctx.ss.getUrl());
   console.log(fy + '年度フォルダ: ' + ctx.folder.getUrl());
 }
 
-/** 来年度分を前もって作りたいときに実行（通常は保存時に自動作成されます） */
+/** 毎月1日の朝に autoCreateYear を自動実行する設定（setup で登録） */
+function installYearTrigger_() {
+  const exists = ScriptApp.getProjectTriggers().some(function (t) { return t.getHandlerFunction() === 'autoCreateYear'; });
+  if (!exists) ScriptApp.newTrigger('autoCreateYear').timeBased().onMonthDay(1).atHour(5).create();
+}
+
+/** 自動実行：今年度のフォルダ・スプレッドシートがなければ作る（4月1日に新年度分ができます）。3月には来年度分も先に作ります */
+function autoCreateYear() {
+  const t = today_();
+  const fy = fiscalYearOf_(t);
+  yearContext_(fy);
+  if (parseDate_(t).m === 3) yearContext_(fy + 1);
+}
+
+/** 来年度分を前もって作りたいときに実行（通常は保存時・毎月1日に自動作成されます） */
 function setupNextYear() {
   const fy = fiscalYearOf_(today_()) + 1;
   console.log(yearContext_(fy).ss.getUrl());
@@ -108,7 +126,7 @@ function fiscalYearOf_(dateStr) {
 }
 
 function pad2_(n) { return ('0' + n).slice(-2); }
-function monthFolderName_(m) { return pad2_(MONTH_ORDER.indexOf(m) + 1) + '_' + pad2_(m) + '月'; }
+function monthFolderName_(m) { return m + '月'; }
 function monthSheetName_(m) { return pad2_(m) + '月'; }
 function slashDate_(dateStr) { const p = parseDate_(dateStr); return p.y + '/' + pad2_(p.m) + '/' + pad2_(p.d); }
 
@@ -135,7 +153,6 @@ function yearContext_(fy) {
       const c = JSON.parse(cached);
       folder = DriveApp.getFolderById(c.folderId);
       ss = SpreadsheetApp.openById(c.ssId);
-      if (folder.isTrashed() || DriveApp.getFileById(c.ssId).isTrashed()) { folder = null; ss = null; }
     } catch (e) { folder = null; ss = null; }
   }
   if (!folder || !ss) {
@@ -265,12 +282,13 @@ function save_(req) {
   const lock = LockService.getScriptLock();
   lock.waitLock(30000);
   try {
+    const rows = allRows_(fy); // 1回だけ読み込んで、送信済みチェックと重複チェックの両方に使う
     if (clientId) {
-      const existing = findByClientId_(ctx.ss, clientId);
-      if (existing) return { ok: true, alreadySaved: true, fileName: existing.fileName, fileUrl: existing.fileUrl };
+      const existing = rows.filter(function (r) { return r.clientId === clientId; })[0];
+      if (existing) return { ok: true, alreadySaved: true, fileName: existing.date + ' ' + existing.payee, fileUrl: existing.fileUrl };
     }
     if (!req.force) {
-      const dups = findDuplicates_(rec);
+      const dups = findDuplicates_(rec, rows);
       if (dups.length) return { ok: true, duplicate: true, duplicates: dups };
     }
 
@@ -290,6 +308,7 @@ function save_(req) {
     ]];
     sh.getRange(row, 1, 1, HEADER.length).setValues(values);
     sortAndNumber_(sh);
+    if (rec.category === 'レッスン室') ensureFacilityRow_(ctx.ss, rec.payee);
     SpreadsheetApp.flush();
     return { ok: true, saved: true, fileName: fileName, fileUrl: file.getUrl(), spreadsheetUrl: ctx.ss.getUrl(), sheet: sh.getName() };
   } finally {
@@ -338,28 +357,32 @@ function allRows_(fy) {
   return rows;
 }
 
-function findByClientId_(ss, clientId) {
-  for (let i = 0; i < MONTH_ORDER.length; i++) {
-    const sh = ss.getSheetByName(monthSheetName_(MONTH_ORDER[i]));
-    if (!sh || sh.getLastRow() < DATA_START) continue;
-    const ids = sh.getRange(DATA_START, COL.clientId, sh.getLastRow() - DATA_START + 1, 1).getValues();
-    for (let j = 0; j < ids.length; j++) {
-      if (ids[j][0] === clientId) {
-        const r = readRows_(sh)[j];
-        return { fileName: r ? r.date + ' ' + r.payee : '', fileUrl: r ? r.fileUrl : '' };
-      }
-    }
-  }
-  return null;
+/** 年間集計の「レッスン室 施設別」に、まだない施設の行を自動で追加する */
+function ensureFacilityRow_(ss, payee) {
+  const sum = ss.getSheetByName(SUMMARY_SHEET);
+  if (!sum || !payee) return;
+  const FIRST = 20;
+  const last = Math.max(sum.getLastRow(), FIRST - 1);
+  const names = last >= FIRST ? sum.getRange(FIRST, 1, last - FIRST + 1, 1).getValues().map(function (r) { return normPayee_(r[0]); }) : [];
+  if (names.indexOf(normPayee_(payee)) >= 0) return;
+  const r = last + 1;
+  const cells = [payee];
+  MONTH_ORDER.forEach(function (m) {
+    const sn = "'" + monthSheetName_(m) + "'!";
+    cells.push('=SUMIFS(' + sn + '$F$' + DATA_START + ':$F,' + sn + '$C$' + DATA_START + ':$C,"レッスン室",' + sn + '$D$' + DATA_START + ':$D,$A' + r + ')');
+  });
+  cells.push('=SUM(B' + r + ':M' + r + ')');
+  sum.getRange(r, 1, 1, cells.length).setValues([cells]);
+  sum.getRange(r, 2, 1, cells.length - 1).setNumberFormat('#,##0"円"');
 }
 
 /** 二重登録チェック：①番号＋支払先が同じ ②支払日＋支払先＋金額が同じ */
-function findDuplicates_(rec) {
+function findDuplicates_(rec, rows) {
   const fy = fiscalYearOf_(rec.date);
   const num = normNumber_(rec.number);
   const payee = normPayee_(rec.payee);
   const out = [];
-  allRows_(fy).forEach(function (r) {
+  (rows || allRows_(fy)).forEach(function (r) {
     const samePayee = normPayee_(r.payee) === payee;
     let reason = '';
     if (num && num.length >= 3 && normNumber_(r.number) === num && samePayee) reason = '番号が同じ（' + r.number + '）';
@@ -482,7 +505,8 @@ function receiptPrompt_() {
     '- 次の施設は必ずこの名前に統一する:',
     '  - 釜石市民ホール（TETTO・釜石市民ホール指定管理者）→ payee「釜石市民ホール」、detail は部屋名（例「スタジオA」）',
     '  - 大槌町文化交流センター（おしゃっち・大槌町長・「文化交流センター」の領収印）→ payee「大槌町文化交流センター」、detail は摘要（例「レッスン室」）',
-    '- 種類: レッスン室（施設・部屋の利用料）/ 交通費（電車・バス・タクシー・高速代・ガソリン）/ 駐車場代 / 備品代（物品の購入）/ その他。',
+    '- 上記以外の施設（市民会館・公民館・体育館・貸しスタジオ・貸し会議室など）は、書類に書かれた正式な施設名を payee に、部屋名を detail に入れる。',
+    '- 種類: レッスン室（施設・部屋・スタジオの利用料。初めての施設でもレッスン室）/ 交通費（電車・バス・タクシー・高速代・ガソリン）/ 駐車場代 / 備品代（物品の購入）/ その他。',
     '',
     '# 宛名（addressee）',
     '- 「株式会社キッズピース」「きっずふぁむ」「益子翔太」などの宛名をそのまま書く（どれでも問題ない）。',
@@ -497,8 +521,9 @@ function analyzeReceipt_(imageB64) {
   if (!imageB64) throw new Error('写真がありません');
   const data = String(imageB64).replace(/^data:image\/\w+;base64,/, '');
 
+  const model = prop_('CLAUDE_MODEL') || DEFAULT_CLAUDE_MODEL;
   const body = {
-    model: CLAUDE_MODEL,
+    model: model,
     max_tokens: 16000,
     output_config: { effort: 'low', format: { type: 'json_schema', schema: RECEIPT_SCHEMA } },
     fallbacks: 'default',
@@ -510,8 +535,12 @@ function analyzeReceipt_(imageB64) {
       ],
     }],
   };
-  let res = callClaude_(key, body, true);
-  if (res.code === 400 && /fallback/i.test(res.text)) { // フォールバック機能が使えない場合は外して再実行
+  // Sonnet 5.5 は考える処理を省いて高速化（読み取りの単純作業なので十分）
+  // （between_tools は他のモデルでは使えないため、この場合は自動切り替え(fallbacks)を付けない）
+  let useFallback = true;
+  if (/^claude-sonnet-5-5/.test(model)) { body.thinking = { type: 'between_tools' }; delete body.fallbacks; useFallback = false; }
+  let res = callClaude_(key, body, useFallback);
+  if (useFallback && res.code === 400 && /fallback/i.test(res.text)) { // フォールバック機能が使えない場合は外して再実行
     delete body.fallbacks;
     res = callClaude_(key, body, false);
   }

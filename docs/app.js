@@ -1,7 +1,7 @@
 /* きっずふぁむ 領収書アプリ（画面側） */
 (function () {
   'use strict';
-  const APP_VERSION = '1.0.0';
+  const APP_VERSION = '1.1.0';
   const { DB, api, processQueue, aiToRecord } = window.KF;
   const $ = (s) => document.querySelector(s);
   const $$ = (s) => Array.from(document.querySelectorAll(s));
@@ -10,6 +10,7 @@
   let srcCanvas = null;   // 撮影した元画像（縮小済み）
   let quad = null;        // 切り抜く四隅
   let current = null;     // 確認中のデータ { id?, image, ai, record }
+  let spec = null;        // 先読み（切り抜き画面を見ている間に、自動検出の範囲で切り抜き＋AI読み取りを始めておく）
 
   /* ---------------- 共通 UI ---------------- */
   function showScreen(name) {
@@ -28,9 +29,9 @@
   }
 
   let toastTimer = null;
-  function toast(msg, ms) {
+  function toast(msg, ms, ic) {
     const t = $('#toast');
-    t.textContent = msg; t.classList.remove('hidden');
+    t.innerHTML = (ic ? Icon(ic) : '') + esc(msg); t.classList.remove('hidden');
     clearTimeout(toastTimer);
     toastTimer = setTimeout(() => t.classList.add('hidden'), ms || 3500);
   }
@@ -78,7 +79,7 @@
     if (stream) return;
     const msg = $('#cameraMsg');
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-      msg.innerHTML = 'このブラウザではカメラを直接使えません。<br>下の 📷 ボタンで撮影してください。';
+      msg.innerHTML = 'このブラウザではカメラを直接使えません。<br>右下のカメラボタンで撮影してください。';
       msg.classList.remove('hidden');
       return;
     }
@@ -93,7 +94,7 @@
       msg.classList.add('hidden');
     } catch (err) {
       stream = null;
-      msg.innerHTML = 'カメラを起動できませんでした。<br>カメラの使用を「許可」してください。<br>または下の 📷 ボタンで撮影できます。';
+      msg.innerHTML = 'カメラを起動できませんでした。<br>カメラの使用を「許可」してください。<br>または右下のカメラボタンで撮影できます。';
       msg.classList.remove('hidden');
     }
   }
@@ -104,25 +105,10 @@
 
   async function capture() {
     if (!stream) { $('#fileCapture').click(); return; }
-    busy(true, '撮影中…');
-    try {
-      const track = stream.getVideoTracks()[0];
-      let img = null;
-      if ('ImageCapture' in window) {
-        try {
-          const blob = await new ImageCapture(track).takePhoto();
-          img = await loadImage(blob);
-        } catch (e) { img = null; }
-      }
-      if (!img) {
-        const v = $('#video');
-        const c = document.createElement('canvas');
-        c.width = v.videoWidth; c.height = v.videoHeight;
-        c.getContext('2d').drawImage(v, 0, 0);
-        img = c;
-      }
-      openCrop(img);
-    } finally { busy(false); }
+    // 映像のコマをそのまま使う（高画質撮影 takePhoto は数秒かかるため使わない）
+    const v = $('#video');
+    if (!v.videoWidth) return;
+    openCrop(v);
   }
 
   function loadImage(blob) {
@@ -145,10 +131,32 @@
 
   /* ---------------- トリミング ---------------- */
   function openCrop(img) {
-    srcCanvas = Crop.toCanvas(img, 2400, 0);
+    srcCanvas = Crop.toCanvas(img, 2000, 0);
     quad = Crop.detectCorners(srcCanvas);
+    spec = null;
     showScreen('crop');
     drawCrop();
+    // 画面を表示してから裏で先読みを開始
+    setTimeout(() => { if (srcCanvas) spec = prepare(quad); }, 60);
+  }
+
+  const quadKey = (q) => q.map((p) => p.map(Math.round).join(',')).join(';');
+
+  /** 切り抜き（保存用 1500px / AI用 1100px）を作り、オンラインならAI読み取りを開始する */
+  function prepare(q) {
+    const out = Crop.warp(srcCanvas, q, 1500);
+    const image = out.toDataURL('image/jpeg', 0.85);
+    const s = Math.min(1, 1100 / Math.max(out.width, out.height));
+    const small = document.createElement('canvas');
+    small.width = Math.round(out.width * s); small.height = Math.round(out.height * s);
+    small.getContext('2d').drawImage(out, 0, 0, small.width, small.height);
+    const aiImage = small.toDataURL('image/jpeg', 0.8);
+    const p = { key: quadKey(q), image, aiImage, promise: null };
+    if (navigator.onLine) {
+      p.promise = api('analyze', { image: aiImage });
+      p.promise.catch(() => {}); // 未処理エラーの警告を防ぐ
+    }
+    return p;
   }
 
   function drawCrop() {
@@ -203,28 +211,28 @@
   }
 
   async function cropOk() {
-    busy(true, '切り抜き中…');
-    await new Promise((r) => setTimeout(r, 30));
-    let dataUrl;
-    try {
-      const out = Crop.warp(srcCanvas, quad, 1600);
-      dataUrl = out.toDataURL('image/jpeg', 0.85);
-    } finally { busy(false); }
-    current = { image: dataUrl, ai: null, record: null };
-    await analyzeCurrent();
+    let p = spec && spec.key === quadKey(quad) ? spec : null;
+    if (!p) {
+      busy(true, '切り抜き中…');
+      await new Promise((r) => setTimeout(r, 30));
+      try { p = prepare(quad); } finally { busy(false); }
+    }
+    spec = null;
+    current = { image: p.image, aiImage: p.aiImage, ai: null, record: null };
+    await analyzeCurrent(p.promise);
   }
 
   /* ---------------- AI 読み取り ---------------- */
-  async function analyzeCurrent() {
+  async function analyzeCurrent(pending) {
     if (navigator.onLine) {
       busy(true, 'AIが領収書を読み取っています…');
       try {
-        const r = await api('analyze', { image: current.image });
+        const r = await (pending || api('analyze', { image: current.aiImage || current.image }));
         current.ai = r.result;
         current.record = aiToRecord(r.result);
         busy(false);
         if (r.result && r.result.is_receipt === false) {
-          const v = await ask('<h3>領収書ではないかもしれません</h3>このまま入力を続けますか？', [
+          const v = await ask('<h3>' + Icon('alert') + '領収書ではないかもしれません</h3>このまま入力を続けますか？', [
             { label: '撮り直す', value: 'retake', cls: 'ghost' }, { label: '続ける', value: 'go', cls: 'primary' }]);
           if (v === 'retake') { showScreen('camera'); return; }
         }
@@ -233,14 +241,14 @@
       } catch (err) {
         busy(false);
         if (err.code !== 'network') {
-          const v = await ask('<h3>読み取りできませんでした</h3>' + esc(err.message), [
+          const v = await ask('<h3>' + Icon('alert') + '読み取りできませんでした</h3>' + esc(err.message), [
             { label: '手入力する', value: 'manual', cls: 'primary' }, { label: 'あとで読み取る', value: 'later' }]);
           if (v === 'later') return saveForLater();
           current.record = aiToRecord(null); openReview(); return;
         }
       }
     }
-    const v = await ask('<h3>電波がありません</h3>AIでの読み取りは電波がつながってから行えます。<br>どうしますか？', [
+    const v = await ask('<h3>' + Icon('wifiOff') + '電波がありません</h3>AIでの読み取りは電波がつながってから行えます。<br>どうしますか？', [
       { label: 'あとで読み取る', value: 'later', cls: 'primary' }, { label: '今すぐ手入力', value: 'manual' }]);
     if (v === 'later') return saveForLater();
     current.record = aiToRecord(null);
@@ -252,7 +260,7 @@
     current = null;
     await updateBadge();
     requestSync();
-    toast('端末に保存しました。電波が戻ったらAIが読み取り、「送信待ち」に確認依頼が出ます。', 5000);
+    toast('端末に保存しました。電波が戻ったらAIが読み取り、「送信待ち」に確認依頼が出ます。', 5000, 'cloud');
     showScreen('camera');
   }
 
@@ -306,37 +314,37 @@
     await DB.put(item);
     current = null;
     await updateBadge();
+    // すぐに撮影画面へ戻り、保存は裏で行う（続けて次の領収書を撮れる）
+    showScreen('camera');
     if (!navigator.onLine) {
       requestSync();
-      toast('電波がないため端末に保存しました。つながったら自動で送信します。', 5000);
-      showScreen('camera');
+      toast('電波がないため端末に保存しました。つながったら自動で送信します。', 5000, 'cloud');
       return;
     }
-    busy(true, '保存しています…');
-    const s = await processQueue().finally(() => busy(false));
+    toast('保存しています…', 20000, 'upload');
+    const s = await processQueue();
     await updateBadge();
     const after = await DB.get(item.id);
-    if (!after) { toast('保存しました ✅\n' + (s.saved[0] || '')); showScreen('camera'); return; }
-    if (after.status === 'duplicate') { await resolveDuplicate(after); showScreen('camera'); return; }
-    if (s.offline) { requestSync(); toast('通信できなかったため端末に保存しました。あとで自動で送信します。', 5000); }
-    else toast('保存に失敗しました：' + (after.lastError || '') + '（送信待ちに残しています）', 6000);
-    showScreen('camera');
+    if (!after) { toast('保存しました\n' + (s.saved[0] || ''), 3500, 'check'); return; }
+    if (after.status === 'duplicate') { $('#toast').classList.add('hidden'); await resolveDuplicate(after); return; }
+    if (s.offline) { requestSync(); toast('通信できなかったため端末に保存しました。あとで自動で送信します。', 5000, 'cloud'); }
+    else toast('保存に失敗しました：' + (after.lastError || '') + '（送信待ちに残しています）', 6000, 'alert');
   }
 
   async function resolveDuplicate(item) {
     const list = (item.duplicates || []).map((d) =>
       '<div class="card"><div class="body"><div class="main">' + esc(d.date) + '　' + yen(d.amount) + '</div><div class="sub">' +
       esc(d.payee) + ' ' + esc(d.detail) + (d.number ? '<br>番号：' + esc(d.number) : '') + '<br>理由：' + esc(d.reason) +
-      (d.fileUrl ? '<br><a href="' + esc(d.fileUrl) + '" target="_blank" rel="noopener">登録済みの写真を見る</a>' : '') + '</div></div></div>').join('');
-    const v = await ask('<h3>⚠️ 同じ領収書が登録済みかもしれません</h3>今回：' + esc(item.record.date) + '　' + esc(item.record.payee) + '　' + yen(item.record.amount) + list, [
+      (d.fileUrl ? '<br><a href="' + esc(d.fileUrl) + '" target="_blank" rel="noopener">' + Icon('link') + '登録済みの写真を見る</a>' : '') + '</div></div></div>').join('');
+    const v = await ask('<h3>' + Icon('alert') + '同じ領収書が登録済みかもしれません</h3>今回：' + esc(item.record.date) + '　' + esc(item.record.payee) + '　' + yen(item.record.amount) + list, [
       { label: '保存しない', value: 'drop', cls: 'danger' }, { label: 'それでも保存', value: 'force', cls: 'primary' }]);
-    if (v === 'drop') { await DB.del(item.id); toast('保存を取りやめました'); }
+    if (v === 'drop') { await DB.del(item.id); toast('保存を取りやめました', 3000, 'trash'); }
     else {
       item.force = true; item.status = 'ready'; await DB.put(item);
       busy(true, '保存しています…');
       await processQueue().finally(() => busy(false));
       const after = await DB.get(item.id);
-      toast(after ? '送信待ちに残っています（あとで自動送信）' : '保存しました ✅');
+      toast(after ? '送信待ちに残っています（あとで自動送信）' : '保存しました', 3500, after ? 'cloud' : 'check');
     }
     await updateBadge();
   }
@@ -345,7 +353,7 @@
   async function renderList() {
     const items = await DB.all();
     const box = $('#queueList');
-    if (!items.length) box.innerHTML = '<p class="muted">送信待ちはありません 🎉</p>';
+    if (!items.length) box.innerHTML = '<p class="muted">送信待ちはありません</p>';
     else {
       box.innerHTML = '';
       items.forEach((it) => {
@@ -361,7 +369,7 @@
         el.className = 'card';
         el.innerHTML = '<img src="' + it.image + '" alt=""><div class="body"><div>' + label + '</div><div class="main">' +
           (r.date ? esc(r.date) + '　' + yen(r.amount) : '（未入力）') + '</div><div class="sub">' + esc(r.payee || '') + ' ' + esc(r.detail || '') +
-          (it.lastError ? '<br>⚠ ' + esc(it.lastError) : '') + '</div></div><div class="actions"></div>';
+          (it.lastError ? '<br>' + Icon('alert') + ' ' + esc(it.lastError) : '') + '</div></div><div class="actions"></div>';
         const act = el.querySelector('.actions');
         const add = (text, cls, fn) => { const b = document.createElement('button'); b.className = 'btn ' + cls; b.textContent = text; b.onclick = fn; act.appendChild(b); };
         if (it.status === 'needs_review' || it.status === 'error' || it.status === 'needs_analysis' || it.status === 'ready') {
@@ -390,7 +398,7 @@
       box.innerHTML = r.items.length ? r.items.map((x) =>
         '<div class="card"><div class="body"><div class="main">' + esc(x.date) + '　' + yen(x.amount) + '</div><div class="sub">' +
         esc(x.category) + '｜' + esc(x.payee) + ' ' + esc(x.detail) + '</div></div>' +
-        (x.fileUrl ? '<a class="btn" style="width:auto" href="' + esc(x.fileUrl) + '" target="_blank" rel="noopener">写真</a>' : '') + '</div>').join('')
+        (x.fileUrl ? '<a class="btn" style="width:auto" href="' + esc(x.fileUrl) + '" target="_blank" rel="noopener">' + Icon('image') + '写真</a>' : '') + '</div>').join('')
         : '<p class="muted">まだ登録がありません</p>';
     } catch (err) { box.innerHTML = '<p class="muted">' + esc(err.message) + '</p>'; }
   }
@@ -403,11 +411,11 @@
     const s = await processQueue().finally(() => busy(false));
     await updateBadge();
     const msgs = [];
-    if (s.saved.length) msgs.push(s.saved.length + '件 保存しました ✅');
+    if (s.saved.length) msgs.push(s.saved.length + '件 保存しました');
     if (s.reviewed) msgs.push(s.reviewed + '件 AIが読み取りました。「送信待ち」で確認してください');
     if (s.duplicates) msgs.push(s.duplicates + '件 重複の可能性があります。「送信待ち」で確認してください');
     if (s.errors) msgs.push(s.errors + '件 エラーがありました');
-    if (msgs.length) toast(msgs.join('\n'), 5000);
+    if (msgs.length) toast(msgs.join('\n'), 5000, s.duplicates || s.errors ? 'alert' : 'check');
     if ($('#screen-list').classList.contains('active')) renderList();
   }
 
@@ -433,18 +441,18 @@
       const items = r.items;
       const cnt = { ok: 0, near: 0, missing: 0 };
       items.forEach((x) => cnt[x.status]++);
-      $('#calSummary').innerHTML = 'レッスン ' + items.length + '日：<span class="st-ok">✅ ' + cnt.ok + '</span>　<span class="st-near">⚠️ ' + cnt.near +
-        '</span>　<span class="st-missing">❌ ' + cnt.missing + '</span>';
+      $('#calSummary').innerHTML = 'レッスン ' + items.length + '日：<span class="st-ok">' + Icon('check') + cnt.ok + '</span><span class="st-near">' + Icon('alert') + cnt.near +
+        '</span><span class="st-missing">' + Icon('x') + cnt.missing + '</span>';
       const order = { missing: 0, near: 1, ok: 2 };
       items.sort((a, b) => order[a.status] - order[b.status] || (a.date < b.date ? -1 : 1));
       $('#calList').innerHTML = items.length ? items.map((x) => {
-        const st = x.status === 'ok' ? '<span class="st-ok">✅ 領収書あり</span>'
-          : x.status === 'near' ? '<span class="st-near">⚠️ 近い日に領収書あり（' + esc(x.receipt.date) + '）</span>'
-            : '<span class="st-missing">❌ 領収書なし</span>';
+        const st = x.status === 'ok' ? '<span class="st-ok">' + Icon('check') + '領収書あり</span>'
+          : x.status === 'near' ? '<span class="st-near">' + Icon('alert') + '近い日に領収書あり（' + esc(x.receipt.date) + '）</span>'
+            : '<span class="st-missing">' + Icon('x') + '領収書なし</span>';
         return '<div class="card"><div class="body"><div class="main">' + esc(x.date) + ' ' + esc(x.time) + '　' + esc(x.facility) + '</div><div class="sub">' +
           esc(x.titles.join(' / ')) + '</div><div>' + st + '</div></div></div>';
       }).join('') : '<p class="muted">この期間にSARAのレッスン予定は見つかりませんでした</p>';
-    } catch (err) { toast(err.message, 5000); } finally { busy(false); }
+    } catch (err) { toast(err.message, 5000, 'alert'); } finally { busy(false); }
   }
 
   /* ---------------- 設定 ---------------- */
@@ -467,12 +475,12 @@
     busy(true, '接続テスト中…');
     try {
       const r = await api('ping');
-      $('#settingsInfo').innerHTML = '✅ 接続できました<br>今年度：' + r.fiscalYear + '年度<br>' +
-        '<a href="' + esc(r.spreadsheetUrl) + '" target="_blank" rel="noopener">📊 経費一覧スプレッドシートを開く</a><br>' +
-        '<a href="' + esc(r.folderUrl) + '" target="_blank" rel="noopener">📁 領収書フォルダを開く</a><br>' +
-        (r.hasApiKey ? '🤖 AI読み取り：設定済み' : '⚠️ Claude APIキーが未設定です（GASのスクリプトプロパティ）');
+      $('#settingsInfo').innerHTML = '<span class="ok">' + Icon('check') + '接続できました</span><br>今年度：' + r.fiscalYear + '年度<br>' +
+        '<a href="' + esc(r.spreadsheetUrl) + '" target="_blank" rel="noopener">' + Icon('sheet') + '経費一覧スプレッドシートを開く</a><br>' +
+        '<a href="' + esc(r.folderUrl) + '" target="_blank" rel="noopener">' + Icon('folder') + '領収書フォルダを開く</a><br>' +
+        (r.hasApiKey ? Icon('sparkle') + 'AI読み取り：設定済み' : '<span class="ng">' + Icon('alert') + 'Claude APIキーが未設定です（GASのスクリプトプロパティ）</span>');
     } catch (err) {
-      $('#settingsInfo').innerHTML = '❌ ' + esc(err.message);
+      $('#settingsInfo').innerHTML = '<span class="ng">' + Icon('x') + esc(err.message) + '</span>';
     } finally { busy(false); }
   }
 
@@ -497,7 +505,7 @@
     $('#cropRotate').addEventListener('click', () => { srcCanvas = Crop.rotateCanvas(srcCanvas, 90); quad = Crop.detectCorners(srcCanvas); drawCrop(); });
     $('#cropAuto').addEventListener('click', () => { quad = Crop.detectCorners(srcCanvas); renderQuad(); });
     $('#cropFull').addEventListener('click', () => { const W = srcCanvas.width, H = srcCanvas.height; quad = [[0, 0], [W, 0], [W, H], [0, H]]; renderQuad(); });
-    $('#cropRetake').addEventListener('click', () => showScreen('camera'));
+    $('#cropRetake').addEventListener('click', () => { spec = null; showScreen('camera'); });
     $('#cropOk').addEventListener('click', cropOk);
     setupCropDrag();
     $('#reviewForm').addEventListener('submit', submitReview);
@@ -536,6 +544,8 @@
     if (!s.gasUrl || !s.token) { showScreen('settings'); toast('最初に設定を入力してください', 4000); return; }
     if (fromHash) { showScreen('settings'); testConnection(); return; }
     showScreen('camera');
+    // Google側を先に起こしておく（最初の読み取り・保存が速くなる）
+    if (navigator.onLine) api('ping').catch(() => {});
     syncNow(true);
   }
 

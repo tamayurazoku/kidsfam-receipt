@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>きっずふぁむ 領収書</title>
-  <meta name="theme-color" content="#e2557a">
+  <meta name="theme-color" content="#f9d5df">
   <link rel="manifest" href="manifest.webmanifest">
   <link rel="icon" href="icons/icon-192.png">
   <link rel="apple-touch-icon" href="icons/icon-192.png">
@@ -12,7 +12,7 @@
 </head>
 <body>
   <header class="topbar">
-    <div class="title">きっずふぁむ 領収書</div>
+    <div class="title"><i data-ic="receipt"></i>きっずふぁむ 領収書</div>
     <div id="netState" class="net"></div>
   </header>
 
@@ -26,11 +26,11 @@
       </div>
       <div class="camera-controls">
         <label class="btn-round small" title="写真を選ぶ">
-          🖼️<input id="fileInput" type="file" accept="image/*" hidden>
+          <i data-ic="image"></i><input id="fileInput" type="file" accept="image/*" hidden>
         </label>
         <button id="shutter" class="shutter" aria-label="撮影"></button>
         <label class="btn-round small" title="標準カメラで撮る">
-          📷<input id="fileCapture" type="file" accept="image/*" capture="environment" hidden>
+          <i data-ic="camera"></i><input id="fileCapture" type="file" accept="image/*" capture="environment" hidden>
         </label>
       </div>
       <p class="hint">領収書が枠に入るように撮ってください（暗い机の上だと自動切り抜きがきれいになります）</p>
@@ -45,9 +45,9 @@
         <svg id="cropSvg"></svg>
       </div>
       <div class="row-buttons">
-        <button id="cropRotate" class="btn">↻ 回転</button>
-        <button id="cropAuto" class="btn">自動</button>
-        <button id="cropFull" class="btn">全体</button>
+        <button id="cropRotate" class="btn"><i data-ic="rotate"></i>回転</button>
+        <button id="cropAuto" class="btn"><i data-ic="sparkle"></i>自動</button>
+        <button id="cropFull" class="btn"><i data-ic="expand"></i>全体</button>
       </div>
       <div class="row-buttons">
         <button id="cropRetake" class="btn ghost">撮り直す</button>
@@ -92,7 +92,7 @@
     <section id="screen-list" class="screen">
       <h2>送信待ち</h2>
       <div id="queueList" class="list"></div>
-      <button id="syncNow" class="btn">今すぐ送信</button>
+      <button id="syncNow" class="btn"><i data-ic="send"></i>今すぐ送信</button>
       <h2>最近の登録</h2>
       <div id="recentList" class="list"><p class="muted">読み込み中…</p></div>
     </section>
@@ -105,7 +105,7 @@
         <label>開始<input id="calFrom" type="date"></label>
         <label>終了<input id="calTo" type="date"></label>
       </div>
-      <button id="calRun" class="btn primary">照らし合わせる</button>
+      <button id="calRun" class="btn primary"><i data-ic="calendar"></i>照らし合わせる</button>
       <div id="calSummary" class="cal-summary"></div>
       <div id="calList" class="list"></div>
     </section>
@@ -119,22 +119,24 @@
         <div class="row-buttons"><button type="submit" class="btn primary">保存して接続テスト</button></div>
       </form>
       <div id="settingsInfo" class="info"></div>
-      <button id="installBtn" class="btn hidden">📲 アプリとしてインストール</button>
+      <button id="installBtn" class="btn hidden"><i data-ic="download"></i>アプリとしてインストール</button>
       <p class="muted small">バージョン <span id="appVersion"></span></p>
     </section>
   </main>
 
   <nav class="tabbar">
-    <button data-tab="camera" class="tab active"><span>📷</span>撮影</button>
-    <button data-tab="list" class="tab"><span>📤</span>送信待ち<b id="badge" class="badge hidden">0</b></button>
-    <button data-tab="calendar" class="tab"><span>📅</span>照合</button>
-    <button data-tab="settings" class="tab"><span>⚙️</span>設定</button>
+    <button data-tab="camera" class="tab active"><i data-ic="camera"></i>撮影</button>
+    <button data-tab="list" class="tab"><i data-ic="upload"></i>送信待ち<b id="badge" class="badge hidden">0</b></button>
+    <button data-tab="calendar" class="tab"><i data-ic="calendar"></i>照合</button>
+    <button data-tab="settings" class="tab"><i data-ic="settings"></i>設定</button>
   </nav>
 
   <div id="busy" class="busy hidden"><div class="spinner"></div><p id="busyText">処理中…</p></div>
   <div id="toast" class="toast hidden"></div>
   <dialog id="dialog"><div id="dialogBody"></div><div id="dialogButtons" class="row-buttons"></div></dialog>
 
+  <script src="icons.js"></script>
+  <script>applyIcons();</script>
   <script src="shared.js"></script>
   <script src="crop.js"></script>
   <script src="app.js"></script>
