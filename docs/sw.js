@@ -1,7 +1,7 @@
 /* サービスワーカー：オフラインでもアプリを開けるようにし、電波が戻ったら自動送信する */
 importScripts('shared.js');
 
-const CACHE = 'kidsfam-receipt-v2';
+const CACHE = 'kidsfam-receipt-v3';
 const ASSETS = ['./', 'index.html', 'styles.css', 'app.js', 'crop.js', 'shared.js', 'icons.js', 'manifest.webmanifest', 'icons/icon-192.png', 'icons/icon-512.png'];
 
 self.addEventListener('install', (e) => {

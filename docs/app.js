@@ -1,7 +1,7 @@
 /* きっずふぁむ 領収書アプリ（画面側） */
 (function () {
   'use strict';
-  const APP_VERSION = '1.1.0';
+  const APP_VERSION = '1.1.1';
   const { DB, api, processQueue, aiToRecord } = window.KF;
   const $ = (s) => document.querySelector(s);
   const $$ = (s) => Array.from(document.querySelectorAll(s));
