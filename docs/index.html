@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>きっずふぁむ 領収書</title>
+  <meta name="theme-color" content="#e2557a">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icons/icon-192.png">
+  <link rel="apple-touch-icon" href="icons/icon-192.png">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="title">きっずふぁむ 領収書</div>
+    <div id="netState" class="net"></div>
+  </header>
+
+  <main>
+    <!-- 撮影 -->
+    <section id="screen-camera" class="screen active">
+      <div class="camera-wrap">
+        <video id="video" playsinline muted autoplay></video>
+        <div class="camera-guide"></div>
+        <div id="cameraMsg" class="camera-msg hidden"></div>
+      </div>
+      <div class="camera-controls">
+        <label class="btn-round small" title="写真を選ぶ">
+          🖼️<input id="fileInput" type="file" accept="image/*" hidden>
+        </label>
+        <button id="shutter" class="shutter" aria-label="撮影"></button>
+        <label class="btn-round small" title="標準カメラで撮る">
+          📷<input id="fileCapture" type="file" accept="image/*" capture="environment" hidden>
+        </label>
+      </div>
+      <p class="hint">領収書が枠に入るように撮ってください（暗い机の上だと自動切り抜きがきれいになります）</p>
+    </section>
+
+    <!-- トリミング -->
+    <section id="screen-crop" class="screen">
+      <h2>切り抜く範囲の確認</h2>
+      <p class="hint">四隅の ● を指で動かして、領収書のふちに合わせてください。</p>
+      <div id="cropStage" class="crop-stage">
+        <canvas id="cropCanvas"></canvas>
+        <svg id="cropSvg"></svg>
+      </div>
+      <div class="row-buttons">
+        <button id="cropRotate" class="btn">↻ 回転</button>
+        <button id="cropAuto" class="btn">自動</button>
+        <button id="cropFull" class="btn">全体</button>
+      </div>
+      <div class="row-buttons">
+        <button id="cropRetake" class="btn ghost">撮り直す</button>
+        <button id="cropOk" class="btn primary">この範囲でOK</button>
+      </div>
+    </section>
+
+    <!-- 確認 -->
+    <section id="screen-review" class="screen">
+      <h2>この内容で合っていますか？</h2>
+      <img id="reviewImg" class="review-img" alt="切り抜いた領収書">
+      <div id="aiNotes" class="notes hidden"></div>
+      <form id="reviewForm" class="form" autocomplete="off">
+        <label>支払日<input name="date" type="date" required></label>
+        <label>種類
+          <select name="category">
+            <option>レッスン室</option><option>交通費</option><option>駐車場代</option><option>備品代</option><option>その他</option>
+          </select>
+        </label>
+        <label>支払先<input name="payee" list="payeeList" required placeholder="例：釜石市民ホール"></label>
+        <datalist id="payeeList">
+          <option value="釜石市民ホール"></option>
+          <option value="大槌町文化交流センター"></option>
+        </datalist>
+        <label>内容<input name="detail" placeholder="例：スタジオA / レッスン室"></label>
+        <div class="two">
+          <label>金額（税込・円）<input name="amount" type="number" inputmode="numeric" min="1" required></label>
+          <label>うち消費税<input name="tax" type="number" inputmode="numeric" min="0"></label>
+        </div>
+        <label>宛名<input name="addressee" placeholder="例：株式会社キッズピース"></label>
+        <label>番号（領収書No.・申請受付番号）<input name="number"></label>
+        <label>備考<input name="note"></label>
+        <p id="fileNamePreview" class="filename"></p>
+        <div class="row-buttons">
+          <button type="button" id="reviewCancel" class="btn ghost">やめる</button>
+          <button type="submit" class="btn primary big">OK（保存）</button>
+        </div>
+      </form>
+    </section>
+
+    <!-- 送信待ち・履歴 -->
+    <section id="screen-list" class="screen">
+      <h2>送信待ち</h2>
+      <div id="queueList" class="list"></div>
+      <button id="syncNow" class="btn">今すぐ送信</button>
+      <h2>最近の登録</h2>
+      <div id="recentList" class="list"><p class="muted">読み込み中…</p></div>
+    </section>
+
+    <!-- カレンダー照合 -->
+    <section id="screen-calendar" class="screen">
+      <h2>カレンダーと照らし合わせ</h2>
+      <p class="hint">Googleカレンダーの「SARA」の予定（おしゃっち・大槌 / TETTO・釜石）と、レッスン室の領収書を照らし合わせます。</p>
+      <div class="two">
+        <label>開始<input id="calFrom" type="date"></label>
+        <label>終了<input id="calTo" type="date"></label>
+      </div>
+      <button id="calRun" class="btn primary">照らし合わせる</button>
+      <div id="calSummary" class="cal-summary"></div>
+      <div id="calList" class="list"></div>
+    </section>
+
+    <!-- 設定 -->
+    <section id="screen-settings" class="screen">
+      <h2>設定</h2>
+      <form id="settingsForm" class="form">
+        <label>GASのURL（ウェブアプリのURL）<input name="gasUrl" type="url" placeholder="https://script.google.com/macros/s/…/exec" required></label>
+        <label>合言葉（APP_TOKEN）<input name="token" required></label>
+        <div class="row-buttons"><button type="submit" class="btn primary">保存して接続テスト</button></div>
+      </form>
+      <div id="settingsInfo" class="info"></div>
+      <button id="installBtn" class="btn hidden">📲 アプリとしてインストール</button>
+      <p class="muted small">バージョン <span id="appVersion"></span></p>
+    </section>
+  </main>
+
+  <nav class="tabbar">
+    <button data-tab="camera" class="tab active"><span>📷</span>撮影</button>
+    <button data-tab="list" class="tab"><span>📤</span>送信待ち<b id="badge" class="badge hidden">0</b></button>
+    <button data-tab="calendar" class="tab"><span>📅</span>照合</button>
+    <button data-tab="settings" class="tab"><span>⚙️</span>設定</button>
+  </nav>
+
+  <div id="busy" class="busy hidden"><div class="spinner"></div><p id="busyText">処理中…</p></div>
+  <div id="toast" class="toast hidden"></div>
+  <dialog id="dialog"><div id="dialogBody"></div><div id="dialogButtons" class="row-buttons"></div></dialog>
+
+  <script src="shared.js"></script>
+  <script src="crop.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
