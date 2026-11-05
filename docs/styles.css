@@ -127,3 +127,4 @@ dialog::backdrop { background: rgba(0,0,0,.5); }
 #dialogBody h3 .ic { color: var(--warn); }
 #dialogBody a { color: var(--pink-deep); }
 #dialogBody .card { margin-top: 8px; }
+#updateBtn, #installBtn { margin-top: 10px; }

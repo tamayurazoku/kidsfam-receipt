@@ -1,7 +1,7 @@
 /* きっずふぁむ 領収書アプリ（画面側） */
 (function () {
   'use strict';
-  const APP_VERSION = '1.1.1';
+  const APP_VERSION = '1.1.2';
   const { DB, api, processQueue, aiToRecord } = window.KF;
   const $ = (s) => document.querySelector(s);
   const $$ = (s) => Array.from(document.querySelectorAll(s));
@@ -527,10 +527,26 @@
       else { if ($('#screen-camera').classList.contains('active')) startCamera(); syncNow(true); }
     });
     window.addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); installEvt = e; $('#installBtn').classList.remove('hidden'); });
+    $('#updateBtn').addEventListener('click', async () => {
+      busy(true, '最新版を読み込んでいます…');
+      try {
+        if (navigator.serviceWorker) for (const r of await navigator.serviceWorker.getRegistrations()) await r.unregister();
+        if (window.caches) for (const k of await caches.keys()) await caches.delete(k);
+      } catch (e) { /* 失敗しても再読み込みする */ }
+      location.replace(location.pathname + '?v=' + Date.now());
+    });
     $('#installBtn').addEventListener('click', async () => { if (installEvt) { installEvt.prompt(); await installEvt.userChoice; installEvt = null; $('#installBtn').classList.add('hidden'); } });
 
     if ('serviceWorker' in navigator) {
-      navigator.serviceWorker.register('sw.js').catch(() => {});
+      // 新しい版が届いたら自動で再読み込み（2回開き直さなくても最新版になる）
+      const hadController = !!navigator.serviceWorker.controller;
+      let reloaded = false;
+      navigator.serviceWorker.addEventListener('controllerchange', () => {
+        if (hadController && !reloaded && !$('#screen-review').classList.contains('active') && !$('#screen-crop').classList.contains('active')) { reloaded = true; location.reload(); }
+      });
+      navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).then((reg) => {
+        document.addEventListener('visibilitychange', () => { if (!document.hidden) reg.update().catch(() => {}); });
+      }).catch(() => {});
       navigator.serviceWorker.addEventListener('message', (e) => {
         if (e.data && e.data.type === 'queue-updated') { updateBadge(); if ($('#screen-list').classList.contains('active')) renderList(); }
       });

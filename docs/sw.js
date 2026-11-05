@@ -1,11 +1,11 @@
 /* サービスワーカー：オフラインでもアプリを開けるようにし、電波が戻ったら自動送信する */
 importScripts('shared.js');
 
-const CACHE = 'kidsfam-receipt-v3';
+const CACHE = 'kidsfam-receipt-v4';
 const ASSETS = ['./', 'index.html', 'styles.css', 'app.js', 'crop.js', 'shared.js', 'icons.js', 'manifest.webmanifest', 'icons/icon-192.png', 'icons/icon-512.png'];
 
 self.addEventListener('install', (e) => {
-  e.waitUntil(caches.open(CACHE).then((c) => c.addAll(ASSETS)).then(() => self.skipWaiting()));
+  e.waitUntil(caches.open(CACHE).then((c) => c.addAll(ASSETS.map((u) => new Request(u, { cache: 'reload' })))).then(() => self.skipWaiting()));
 });
 
 self.addEventListener('activate', (e) => {
@@ -18,7 +18,7 @@ self.addEventListener('fetch', (e) => {
   // すぐにキャッシュから表示し（起動が速い）、裏で最新版を取りに行く
   e.respondWith(caches.open(CACHE).then(async (c) => {
     const cached = await c.match(e.request, { ignoreSearch: true });
-    const fresh = fetch(e.request).then((res) => { if (res.ok) c.put(e.request, res.clone()); return res; }).catch(() => null);
+    const fresh = fetch(e.request, { cache: 'no-cache' }).then((res) => { if (res.ok) c.put(e.request, res.clone()); return res; }).catch(() => null);
     if (cached) { e.waitUntil(fresh); return cached; }
     return (await fresh) || (await c.match('index.html')) || Response.error();
   }));
