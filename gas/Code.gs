@@ -30,7 +30,34 @@ function canonicalFacility_(text) {
   for (let i = 0; i < FACILITIES.length; i++) {
     if (FACILITIES[i].keywords.some(function (k) { return t.indexOf(k.toUpperCase()) >= 0; })) return FACILITIES[i].name;
   }
+  // 以前に自動で追加した施設（表記ゆれも同じ施設にまとめる）
+  const n = normPayee_(text).toUpperCase();
+  if (n.length >= 3) {
+    const learned = learnedFacilities_();
+    for (let j = 0; j < learned.length; j++) {
+      const m = normPayee_(learned[j]).toUpperCase();
+      if (m && (n.indexOf(m) >= 0 || m.indexOf(n) >= 0)) return learned[j];
+    }
+  }
   return null;
+}
+
+/* 新しい施設の自動登録（スクリプトプロパティ LEARNED_FACILITIES に保存） */
+function learnedFacilities_() {
+  try { return JSON.parse(prop_('LEARNED_FACILITIES') || '[]'); } catch (e) { return []; }
+}
+function addLearnedFacility_(name) {
+  name = String(name || '').trim();
+  if (!name) return;
+  if (FACILITIES.some(function (f) { return f.name === name; })) return;
+  const list = learnedFacilities_();
+  if (list.indexOf(name) >= 0) return;
+  list.push(name);
+  PropertiesService.getScriptProperties().setProperty('LEARNED_FACILITIES', JSON.stringify(list));
+}
+/** アプリの候補・集計表に出す施設の一覧（よく使う4施設＋自動で追加された施設） */
+function allFacilityNames_() {
+  return FACILITIES.map(function (f) { return f.name; }).concat(learnedFacilities_());
 }
 const MONTH_ORDER = [4, 5, 6, 7, 8, 9, 10, 11, 12, 1, 2, 3];
 const HEADER = ['No', '支払日', '種類', '支払先', '内容', '金額(税込)', 'うち消費税', '宛名', '番号', '写真', '備考', '登録日時', 'ファイルID', '登録ID'];
@@ -119,6 +146,7 @@ function info_() {
     spreadsheetUrl: ctx.ss.getUrl(),
     folderUrl: ctx.folder.getUrl(),
     hasApiKey: !!prop_('CLAUDE_API_KEY'),
+    facilities: allFacilityNames_(),
   };
 }
 
@@ -241,9 +269,9 @@ function ensureStructure_(ss, fy) {
     // 施設別（レッスン室）
     const fHead = ['レッスン室 施設別'].concat(MONTH_ORDER.map(function (m) { return m + '月'; }), ['合計']);
     sum.getRange(19, 1, 1, fHead.length).setValues([fHead]).setFontWeight('bold').setBackground('#e3f2fd');
-    const fRows = FACILITIES.map(function (f, fi) {
+    const fRows = allFacilityNames_().map(function (fname, fi) {
       const r = 20 + fi;
-      const cells = [f.name];
+      const cells = [fname];
       MONTH_ORDER.forEach(function (m) {
         const sn = "'" + monthSheetName_(m) + "'!";
         cells.push('=SUMIFS(' + sn + '$F$' + DATA_START + ':$F,' + sn + '$C$' + DATA_START + ':$C,"レッスン室",' + sn + '$D$' + DATA_START + ':$D,$A' + r + ')');
@@ -323,7 +351,7 @@ function save_(req) {
     ]];
     sh.getRange(row, 1, 1, HEADER.length).setValues(values);
     sortAndNumber_(sh);
-    if (rec.category === 'レッスン室') ensureFacilityRow_(ctx.ss, rec.payee);
+    if (rec.category === 'レッスン室') { addLearnedFacility_(rec.payee); ensureFacilityRow_(ctx.ss, rec.payee); }
     SpreadsheetApp.flush();
     return { ok: true, saved: true, fileName: fileName, fileUrl: file.getUrl(), spreadsheetUrl: ctx.ss.getUrl(), sheet: sh.getName() };
   } finally {
@@ -424,7 +452,7 @@ function rebuildFacilityRows_(ss, fy) {
   if (!sum) return;
   const last = sum.getLastRow();
   if (last >= 20) sum.getRange(20, 1, last - 19, 14).clearContent();
-  FACILITIES.forEach(function (f) { ensureFacilityRow_(ss, f.name); });
+  allFacilityNames_().forEach(function (n) { ensureFacilityRow_(ss, n); });
   allRows_(fy).forEach(function (r) { if (r.category === 'レッスン室') ensureFacilityRow_(ss, r.payee); });
 }
 
@@ -477,6 +505,13 @@ function recent_(limit) {
 function facilityFromTitle_(title) {
   const t = String(title || '');
   if (!/sara/i.test(t)) return null;
+  // 自動で追加された施設：予定名に施設名がそのまま入っていれば判定（よく使う4施設より先に見る）
+  const T = normPayee_(t).toUpperCase();
+  const learned = learnedFacilities_();
+  for (let j = 0; j < learned.length; j++) {
+    const full = normPayee_(learned[j]).toUpperCase();
+    if (full.length >= 3 && T.indexOf(full) >= 0) return learned[j];
+  }
   for (let i = 0; i < FACILITIES.length; i++) {
     const f = FACILITIES[i];
     if (f.cal.some(function (k) { return t.toUpperCase().indexOf(k.toUpperCase()) >= 0; })) return f.name;
@@ -578,6 +613,10 @@ function receiptPrompt_() {
     '  2. 「大槌町城山公園体育館使用許可書」→ payee「大槌町城山公園体育館」、detail は使用場所（例「アリーナ全面」「アリーナ半面」）',
     '  3. 「大槌町中央公民館使用許可書」→ payee「大槌町中央公民館」、detail は使用場所（例「大会議室」）',
     '  4. 「施設利用許可書」（釜石市民ホール・TETTO・釜石市民ホール指定管理者）→ payee「釜石市民ホールTETTO」、detail は利用施設（例「スタジオA」）',
+    (function () {
+      const l = learnedFacilities_();
+      return l.length ? '- 以前に登録した施設: ' + l.join('、') + '。同じ施設の書類なら、必ずこの名前をそのまま使う。' : '';
+    })(),
     '- 使用許可書（城山公園体育館・中央公民館）の支払日は、許可した日付（「令和○年○月○日 …館長」の日付）または受付印の日付。使用日時ではない。',
     '- 上記以外の施設（市民会館・公民館・体育館・貸しスタジオ・貸し会議室など）は、書類に書かれた正式な施設名を payee に、部屋名を detail に入れる。',
     '- 種類: レッスン室（施設・部屋・スタジオの利用料。初めての施設でもレッスン室）/ 交通費（電車・バス・タクシー・高速代・ガソリン）/ 駐車場代 / 備品代（物品の購入）/ その他。',

@@ -1,7 +1,7 @@
 /* きっずふぁむ 領収書アプリ（画面側） */
 (function () {
   'use strict';
-  const APP_VERSION = '1.2.2';
+  const APP_VERSION = '1.2.3';
   const { DB, api, processQueue, aiToRecord } = window.KF;
   const $ = (s) => document.querySelector(s);
   const $$ = (s) => Array.from(document.querySelectorAll(s));
@@ -475,6 +475,7 @@
     busy(true, '接続テスト中…');
     try {
       const r = await api('ping');
+      setFacilities(r.facilities);
       $('#settingsInfo').innerHTML = '<span class="ok">' + Icon('check') + '接続できました</span><br>今年度：' + r.fiscalYear + '年度<br>' +
         '<a href="' + esc(r.spreadsheetUrl) + '" target="_blank" rel="noopener">' + Icon('sheet') + '経費一覧スプレッドシートを開く</a><br>' +
         '<a href="' + esc(r.folderUrl) + '" target="_blank" rel="noopener">' + Icon('folder') + '領収書フォルダを開く</a><br>' +
@@ -482,6 +483,14 @@
     } catch (err) {
       $('#settingsInfo').innerHTML = '<span class="ng">' + Icon('x') + esc(err.message) + '</span>';
     } finally { busy(false); }
+  }
+
+  /** 支払先の候補（よく使う施設＋自動で追加された施設）を更新 */
+  async function setFacilities(list) {
+    if (list && list.length) { try { await DB.setKV('facilities', list); } catch (e) { /* 保存できなくても続ける */ } }
+    const names = list && list.length ? list : ((await DB.getKV('facilities')) || null);
+    if (!names) return;
+    $('#payeeList').innerHTML = names.map((n) => '<option value="' + esc(n) + '"></option>').join('');
   }
 
   /** URL の # に設定を入れて開くと自動で設定（例: index.html#gas=URL&token=XXXX） */
@@ -561,7 +570,8 @@
     if (fromHash) { showScreen('settings'); testConnection(); return; }
     showScreen('camera');
     // Google側を先に起こしておく（最初の読み取り・保存が速くなる）
-    if (navigator.onLine) api('ping').catch(() => {});
+    setFacilities(null);
+    if (navigator.onLine) api('ping').then((r) => setFacilities(r.facilities)).catch(() => {});
     syncNow(true);
   }
 
